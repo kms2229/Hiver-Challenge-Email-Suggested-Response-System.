@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Results (too large for git; optional — remove this line if you want to commit reports)
+results/
+
+# Data (generated — comment out if you want to commit the dataset)
+# data/emails.json
+# data/calibration.json
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
