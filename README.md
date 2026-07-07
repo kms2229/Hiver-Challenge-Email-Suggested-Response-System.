@@ -254,14 +254,36 @@ hiver-email-reply/
 │   ├── generator.py         # RAG structured reply generator with Technique 1 & 4
 │   ├── moa_generator.py     # Mixture-of-Agents with Technique 2
 │   ├── debate_generator.py  # Agent-agent debate generator
-│   ├── evaluator.py         # 5-metric accuracy scorer + Layer 1 guardrails
-│   ├── logger.py            # DPO preference data logger
-│   └── cli.py               # Unified CLI with Technique 6 options
+│   ├── evaluator.py         # 5-metric accuracy scorer, Layer 1 guardrails & reference-free auditing
+│   ├── logger.py            # DPO preference data logger (with PII scrubbing)
+│   ├── scrubber.py          # Regex-based PII scrubber (emails, phone, credit card, API keys)
+│   └── cli.py               # Unified CLI with Technique 6 options & live warning panels
 ├── tests/
-│   └── test_metrics.py      # Unit tests (38 tests, no API calls)
+│   ├── test_metrics.py      # Core metrics tests (38 tests)
+│   └── test_security_hardening.py # Security & PII scrubber tests (8 tests)
 ├── results/                  # Auto-created; stores evaluation reports
 ├── evaluate.py              # Top-level evaluation entry point
 ├── pyproject.toml
 ├── .env.example
 └── README.md
 ```
+
+---
+
+## Security Hardening (July 2026 Audit & Resolution)
+
+Following a comprehensive security and data leak audit, the system has been hardened to protect sensitive customer data and ensure model output safety in live environments.
+
+### 1. Security Gaps Identified
+* **PII Leakage in DPO Logs**: Raw incoming customer support emails, subjects, and generated responses containing emails, phone numbers, credit card numbers, or API keys were logged in plaintext to `logs/preference_log.jsonl`.
+* **Unguarded Live Hallucinations**: Live, custom support generations lacked automatic grounding verification, making it easy for hallucinated policies or commitments to go undetected by support agents.
+* **Jailbreak Vulnerability**: Direct concatenation of user subject and body text in the LLM templates without strict delimiters made the system susceptible to prompt injection attacks.
+
+### 2. Remediation Measures Implemented
+* **Anonymization Engine (`src/scrubber.py`)**: Built a robust regular-expression-based scrubbing utility to redact emails, credit cards, auth tokens, API keys (e.g., `sk-...`), and phone numbers (using negative lookbehinds `(?<!\d)` to correctly isolate digit blocks from special prefix characters).
+* **PII Log Protection**: Embedded the scrubber into `src/logger.py` to strip all PII variables from logged subjects, prompt messages, and generated/reference responses before writing to disk.
+* **Reference-Free Grounding Audits**: Added `evaluate_reply_reference_free` inside `src/evaluator.py`. It runs Layer 1 guardrail validations and evaluates the generated answer’s faithfulness directly against retrieved RAG contexts.
+* **UI/CLI Warn Banners & Fallbacks**: 
+  * If a custom generated suggestion fails guardrails or grounding scores (< 0.70), the CLI and Streamlit dashboard display prominent warning panels detailing the exact violations.
+  * In the UI, a **Recommended Fallback Canned Response** is rendered, allowing the support agent to copy a safe escalation response rather than the hallucinated LLM draft.
+
