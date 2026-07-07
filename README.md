@@ -1,6 +1,6 @@
 # Hiver AI Email Suggested-Response System
 
-An end-to-end system that generates suggested replies to incoming customer-support emails using **Retrieval-Augmented Generation (RAG)** and four advanced generation modes, then measures reply quality with a principled **multi-dimensional accuracy system** including a Debate-as-Judge evaluator.
+An end-to-end system that generates suggested replies to incoming customer-support emails using **Retrieval-Augmented Generation (RAG)** and advanced generation modes, then measures reply quality with a principled **multi-dimensional accuracy system** (including a Debate-as-Judge evaluator, Layer 1 deterministic guardrails, and grounding auditing).
 
 ---
 
@@ -9,13 +9,15 @@ An end-to-end system that generates suggested replies to incoming customer-suppo
 1. [Quick Start](#quick-start)
 2. [System Architecture](#system-architecture)
 3. [The Dataset](#the-dataset)
-4. [The Generator (RAG)](#the-generator-rag)
-5. [Advanced Generation Modes](#advanced-generation-modes)
-6. [The Accuracy System](#the-accuracy-system)
-7. [Running the Evaluation](#running-the-evaluation)
-8. [Understanding the Report](#understanding-the-report)
-9. [Trade-offs & Design Decisions](#trade-offs--design-decisions)
-10. [How I Used AI Tools](#how-i-used-ai-tools)
+4. [Advanced Retrieval Engine](#advanced-retrieval-engine)
+5. [The Generator (RAG) & 2026 Power Prompting](#the-generator-rag--2026-power-prompting)
+6. [Advanced Generation Modes](#advanced-generation-modes)
+7. [The Accuracy System](#the-accuracy-system)
+8. [Running the Evaluation](#running-the-evaluation)
+9. [Understanding the Report](#understanding-the-report)
+10. [DPO Preference Logging](#dpo-preference-logging)
+11. [Trade-offs & Design Decisions](#trade-offs--design-decisions)
+12. [How I Used AI Tools](#how-i-used-ai-tools)
 
 ---
 
@@ -50,28 +52,28 @@ uv run python scripts/generate_dataset.py
 
 This calls GPT-4o-mini to create `data/emails.json` (200 examples) and `data/calibration.json` (10-example validation subset). Takes ~3 minutes and costs ~$0.15.
 
-### Step 2 — Generate a reply for a single email
+### Step 2 — Generate a reply for a single email (with Sentiment Classifier + Audience calibration)
 
 ```bash
 uv run python -m src.cli generate \
   --subject "My invoice shows a charge I don't recognise" \
-  --body "Hi, I noticed a $99 charge on my card from last month that I can't explain. I only signed up for the free tier. Can you help? — Jane"
+  --body "Hi, I noticed a $99 charge on my card from last month that I can't explain. I only signed up for the free tier. Can you help? — Jane" \
+  --classify \
+  --audience "a frustrated customer facing financial discrepancy" \
+  --stakes "Preventing immediate customer churn"
 ```
 
 ### Step 3 — Run the full evaluation pipeline
 
 ```bash
-# Evaluate on 20 randomly-sampled emails (default)
+# Evaluate on 20 randomly-sampled emails (default) using standard mode
 uv run python evaluate.py --sample 20
 
-# Evaluate all 200 emails
-uv run python evaluate.py --sample 0
-
-# Output JSON to stdout instead of file
-uv run python evaluate.py --json-out
+# Evaluate all 200 emails using Mixture-of-Agents mode
+uv run python evaluate.py --sample 0 --mode moa
 ```
 
-### Step 4 — Run the unit tests
+### Step 4 — Run the unit test suite (38 unit tests covering all features)
 
 ```bash
 uv run python -m pytest tests/ -v
@@ -84,23 +86,25 @@ uv run python -m pytest tests/ -v
 ```
   New email
       │
+      ├────────────────────►  Classifier (sentiment, urgency, risk check)
       ▼
   ┌─────────────────────────────────────────────────────────┐
-  │               Agentic RAG Retrieval                      │
-  │  Embed → FAISS search → similarity check                 │
-  │  (if sim < threshold: reformulate query and retry)       │
+  │             Advanced RAG Retrieval Engine               │
+  │  Option 1: Dense (FAISS only)                           │
+  │  Option 2: Hybrid (FAISS + BM25 RRF Fusion)             │
+  │  Option 3: HyDE (Hypothetical Document → Hybrid)       │
+  │  + Agentic RAG Auto-Requery if similarity is low        │
   └───────────────────────┬─────────────────────────────────┘
                           │ top-k past email+reply pairs
                           ▼
   ┌───────────── Choose generation mode ─────────────────────┐
   │                                                           │
-  │  standard ──► Single RAG + LLM pass                      │
+  │  standard ──► Structured JSON (greeting, body, action)   │
+  │               Enforces "Before You Answer" Technique      │
   │                                                           │
   │  refine   ──► Draft → Self-Critique → Revised reply       │
   │                                                           │
-  │  moa      ──► [Candidate 1]  ┐                            │
-  │               [Candidate 2]  ├─► Synthesizer ─► reply     │
-  │               [Candidate 3]  ┘                            │
+  │  moa      ──► N Candidates → Synthesizer + Recommendation │
   │                                                           │
   │  debate   ──► Composer ◄──► Critic (N rounds)             │
   │                    └──────────────► Judge ─► reply         │
@@ -108,13 +112,16 @@ uv run python -m pytest tests/ -v
                           │ suggested reply
                           ▼
   ┌─────────────────────────────────────────────────────────┐
-  │                   Accuracy System                        │
-  │  ① Embedding cosine similarity    (weight 0.35)          │
-  │  ② ROUGE-L recall                 (weight 0.25)          │
-  │  ③ Tone score — single or debate judge  (weight 0.25)    │
-  │  ④ Quality score — single or debate judge (weight 0.15)  │
+  │              5-Metric Evaluator & Guardrails            │
+  │  Layer 1 Deterministic Guardrails (instant, zero cost)  │
+  │  Layer 2 LLM-as-Judge & Overlaps:                       │
+  │    ① Embedding cosine similarity    (weight 0.30)        │
+  │    ② ROUGE-L recall                 (weight 0.20)        │
+  │    ③ Tone score — single/debate     (weight 0.20)        │
+  │    ④ Quality score — single/debate  (weight 0.10)        │
+  │    ⑤ Faithfulness / Grounding       (weight 0.20)        │
   │                                                           │
-  │  → Composite score (0–1) + Spearman calibration          │
+  │  → Composite score (0–1) + DPO preference logging        │
   └─────────────────────────────────────────────────────────┘
 ```
 
@@ -125,8 +132,6 @@ uv run python -m pytest tests/ -v
 **Location:** `data/emails.json`  
 **Size:** 200 email/reply pairs  
 **Generation script:** `scripts/generate_dataset.py`
-
-### What it is
 
 A **synthetic dataset** generated by GPT-4o-mini that simulates a B2B SaaS customer-support inbox — the core Hiver use case. Each record contains:
 
@@ -139,379 +144,97 @@ A **synthetic dataset** generated by GPT-4o-mini that simulates a B2B SaaS custo
 | `company` | Company name (generated) |
 | `body` | Incoming email body |
 | `reply` | Ground-truth support reply |
-| `category` | One of 10 categories (see below) |
+| `category` | One of 10 categories (such as `billing_and_subscription`, `bug_report`) |
 | `tone` | Expected reply tone: empathetic / formal / brief |
 | `persona` | Customer persona used for generation |
 
-### The 10 categories (20 examples each)
+---
 
-1. `billing_and_subscription`
-2. `feature_request`
-3. `bug_report`
-4. `onboarding_and_setup`
-5. `integration_question`
-6. `account_management`
-7. `data_export_and_gdpr`
-8. `partnership_and_sales`
-9. `refund_request`
-10. `general_praise_and_nps`
+## Advanced Retrieval Engine
 
-### Why synthetic? Why is it representative?
-
-**Why not use a real email corpus?**
-
-| Option | Problem |
-|--------|---------|
-| Enron corpus | No paired replies; legal and ethical concerns |
-| Avocado corpus | Paid, not freely redistributable |
-| HelpDesk datasets on HuggingFace | No ground-truth reply pairing; just tickets |
-
-**Why synthetic data is the right call here:**
-
-1. **Full reply pairing**: We control both the incoming email and the ideal reply — essential for evaluation.
-2. **Topic control**: We distribute examples evenly across 10 realistic support categories so the system is tested broadly, not just on the most common query type.
-3. **Diversity injection**: We vary customer personas (10 types), reply tones (3), and use high temperature (0.85) during generation to prevent trivially repetitive examples.
-4. **Reproducibility**: The generation prompt is in `scripts/generate_dataset.py` — anyone can regenerate the exact same style of dataset.
-
-**Limitations (honestly):**
-
-- Synthetic text may be slightly more grammatically consistent than real customer emails, which often include typos and fragmented sentences.
-- Ground-truth replies are GPT-generated, meaning the evaluation reward signal partially reflects GPT's own stylistic preferences. This is partially mitigated by the LLM-as-judge using explicit rubrics and the embedding/ROUGE metrics being model-agnostic.
+Located in `src/dataset.py`, the retrieval engine is modular and supports:
+1. **Dense Retrieval:** FAISS cosine similarity searches using `text-embedding-3-small` embeddings.
+2. **Hybrid (Dense + Sparse) Retrieval:** Leverages **BM25** (using `rank-bm25`) for keyword exact matching and fuses it with dense retrieval using **Reciprocal Rank Fusion (RRF)**.
+3. **HyDE (Hypothetical Document Embeddings):** Generates a hypothetical reply first, then uses it to perform hybrid search, improving retrieval accuracy for vague or complex customer emails.
+4. **Cross-Encoder Reranking (Local Option):** Includes hooks for `sentence-transformers` cross-encoders to perform secondary reranking.
 
 ---
 
-## The Generator (RAG)
+## The Generator (RAG) & 2026 Power Prompting
 
-**File:** `src/generator.py`
+Located in `src/generator.py`, the generator incorporates several core prompts and principles from **2026 Power Prompting Techniques**:
 
-### How it works
-
-1. **Embed** the incoming email with `text-embedding-3-small`.
-2. **Retrieve** the top-3 most similar past email+reply pairs from a FAISS index (cosine similarity).
-3. **Inject** those pairs as few-shot examples into the system prompt.
-4. **Generate** a reply with `gpt-4o-mini` (temperature 0.4).
-
-### Why RAG over alternatives?
-
-| Approach | Pros | Cons | Decision |
-|----------|------|------|----------|
-| **Pure LLM (no retrieval)** | Simple | Ignores your past replies entirely | ✗ No grounding |
-| **All examples in prompt** | Uses all data | 200 examples × ~300 tokens = 60k+ tokens per call; expensive and cluttered | ✗ Not scalable |
-| **RAG (our approach)** | Uses only the *most relevant* past replies; cheap; interpretable | Retrieval quality depends on embedding quality | ✓ **Chosen** |
-| **Fine-tuning** | Deep adaptation | Needs 1k+ examples and GPU budget; overkill for 200 examples | ✗ Too expensive |
-
-### Agentic RAG (built-in)
-
-Standard RAG does a single blind retrieval. This system adds a **reflection step** after retrieval:
-
-1. Retrieve top-k similar emails.
-2. Check the maximum cosine similarity score.
-3. If `max_sim < AGENTIC_RAG_THRESHOLD` (default 0.60): ask the LLM to **reformulate the search query** and retrieve again.
-4. Use whichever retrieval set had higher similarity.
-
-This catches the case where the incoming email is unusual (e.g., a niche integration question) and the initial query embedding doesn't match well against the dataset.
-
-### RAG vs. fine-tuning trade-off
-
-Fine-tuning would bake the style of past replies into the model weights — powerful but brittle and expensive. With RAG, you can update the knowledge base by simply adding new records to `emails.json`, no retraining required. For a support team adding new templates or policies, this is much more practical.
+- **Technique 1: "Before You Answer" Instruction**
+  The LLM JSON schema forces the model to fill out an `"interpretation"` (considering 2-3 different ways to interpret the issue) and `"hidden_assumptions"` array *before* drafting the actual greeting and body.
+- **Technique 4: Specific Example Request**
+  We strictly enforce that the JSON response contains an `"action_items"` list containing at least one concrete, time-bound commitment or next step.
+- **Technique 6: Role + Stakes Context**
+  Via CLI options `--audience` and `--stakes`, we inject explicit audience targeting and urgency constraints to calibrate tone, precision, and depth.
+- **Structured Outputs:** Enforced using OpenAI JSON mode format (`greeting`, `body`, `action_items`, `sign_off`), preventing arbitrary meta-commentary.
 
 ---
 
 ## Advanced Generation Modes
 
-All modes share the same RAG retrieval backbone. Select with `--mode` in the CLI.
+Select with `--mode` in the CLI.
 
 ### Mode 1: `standard` (default)
+Structured RAG generation with the Before-You-Answer chain.
 
-Single RAG retrieval → single LLM call. Fastest and cheapest (~$0.002/email).
+### Mode 2: `refine` (Self-Refine Loop)
+After generating a draft, the same model critiques its own work and applies correction loops to resolve missing details or tone issues.
 
-```bash
-uv run python -m src.cli generate --subject "..." --body "..." --mode standard
-```
+### Mode 3: `moa` (Mixture-of-Agents)
+Generates $N$ high-temperature candidate responses, then runs a low-temperature synthesizer to combine their strengths. Features a **synthesizer recommendation note** (Technique 2) explaining which candidate was selected and why.
 
----
-
-### Mode 2: `refine` — Self-Refine Loop
-
-**Concept:** After generating a draft reply, the same model critiques it and revises once.
-
-```
-Step 1: Generate draft (RAG + LLM)
-Step 2: Self-critique → identify up to 3 weaknesses
-Step 3: If issues found → revise the draft
-        If no issues   → return original draft
-```
-
-**Why it works:** Research shows self-refine reliably improves quality on tasks with well-defined correctness criteria — customer support emails are a perfect fit (empathy, completeness, and clarity are objective).
-
-**Cost:** ~$0.003/email (1 extra critique + conditional revision call).
-
-```bash
-uv run python -m src.cli generate --subject "..." --body "..." --mode refine
-```
-
----
-
-### Mode 3: `moa` — Mixture-of-Agents
-
-**Concept:** Generate N independent candidate replies at high temperature, then a synthesizer model merges the best elements of each into a final reply.
-
-```
-Candidate 1 (temp=0.85) ─┐
-Candidate 2 (temp=0.85) ─┤──► Synthesizer (temp=0.2) ──► Final reply
-Candidate 3 (temp=0.85) ─┘
-```
-
-**Why it works:** High-temperature candidates explore different phrasings, tone choices, and fact orderings. The synthesizer — constrained to low temperature — cherry-picks the strongest opening, the most complete body, and the most appropriate sign-off from across all drafts. MoA consistently outperforms single-shot generation because no single draft is optimal on all dimensions simultaneously.
-
-**Cost:** ~$0.007/email (N candidate calls + 1 synthesizer call). Configurable via `MOA_CANDIDATES` or `--moa-candidates`.
-
-```bash
-uv run python -m src.cli generate --subject "..." --body "..." --mode moa --moa-candidates 3
-```
-
----
-
-### Mode 4: `debate` — Agent-Agent Debate
-
-**Concept:** Three specialized agents — Composer, Critic, and Judge — work together adversarially.
-
-```
-Round 1:  Composer writes draft
-Round 1:  Critic reviews → REVISE: [specific issues]
-Round 2:  Composer revises to fix issues
-Round 2:  Critic reviews → ACCEPT (or REVISE again)
-          ↓
-          Judge reads full transcript → final reply
-```
-
-**Why it works:** The adversarial loop catches what single-shot generation misses:
-- **Tone mismatches** (Critic specializes in tone calibration)
-- **Missing facts** (Critic checks coverage against the incoming email)
-- **Vague commitments** (Critic flags "we'll look into it" without a timeline)
-
-The Judge implements **verifier/generator separation** — the agent that selects the final reply is not the same as the one that wrote it, which is more robust than self-selecting.
-
-**Early stopping:** If the Critic accepts before max rounds, the debate stops — implementing the adaptive-stopping pattern that prevents endless unproductive debate.
-
-**Cost:** ~$0.008/email (2 rounds × 2 calls + 1 judge). Configurable via `DEBATE_ROUNDS` or `--debate-rounds`.
-
-```bash
-uv run python -m src.cli generate --subject "..." --body "..." --mode debate --debate-rounds 2
-```
-
----
-
-### vLLM Backend (local model)
-
-vLLM serves an OpenAI-compatible API. To point the system at a local vLLM instance instead of `api.openai.com`, just set two env vars — **zero code changes needed**:
-
-```bash
-# In .env:
-OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=fake-key-for-local
-GENERATION_MODEL=mistralai/Mistral-7B-Instruct-v0.3  # or whatever model you're serving
-```
-
-This works because the `openai` Python client uses the base URL and API key to route all requests — switching from hosted to local is purely configuration.
+### Mode 4: `debate` (Agent-Agent Debate)
+A Composer agent and a Critic agent debate the response quality over multiple rounds, arbitrated by a final Judge agent.
 
 ---
 
 ## The Accuracy System
 
-**File:** `src/evaluator.py`
+Located in `src/evaluator.py`, accuracy is measured using a dual-layer approach.
 
-This is the core of the challenge.
+### Layer 1: Deterministic Guardrails
+Run instantly at zero cost before LLM judges. Validates:
+- Minimum word counts (no near-empty replies)
+- Refusal language detection (e.g. "I am an AI assistant and cannot...")
+- Presence of greetings and sign-offs
+- Maximum word count cap (prevents bloat)
 
-### What does "accurate" mean for a suggested reply?
-
-Exact string match is the wrong metric — "We're sorry for the inconvenience" and "We apologise for the trouble" are both correct, but would score 0 against each other. A good accuracy metric needs to capture:
-
-- **Semantic equivalence** — Does the reply convey the same meaning?
-- **Content coverage** — Does it address the key facts and action items in the ground truth?
-- **Tone appropriateness** — Is it empathetic when it needs to be, concise when it needs to be?
-- **Professional quality** — Is it complete and ready to send, or does it need editing?
-
-### The four metrics
-
-#### 1. Semantic Similarity (weight: 0.35)
-**Method:** Cosine similarity between OpenAI embeddings of the generated and reference replies.
-
-```
-semantic_sim = cos(embed(generated), embed(reference))
-```
-
-**Why:** Robust to paraphrasing. Captures whether the replies *mean* the same thing, not whether they use the same words. This is the highest-weighted metric because semantic equivalence is the strongest signal of reply accuracy.
-
-**Limitation:** Two replies can be semantically similar but one might be missing a key action (e.g., the refund amount). That's why we also use ROUGE recall.
-
----
-
-#### 2. ROUGE-L Recall (weight: 0.25)
-**Method:** ROUGE-L recall of the generated reply against the reference.
-
-```
-rouge_recall = (longest common subsequence tokens in gen ∩ ref) / (tokens in ref)
-```
-
-**Why recall, not F1?** We care about *coverage of the ground truth*, not brevity. A long reply that covers all the key points should not be penalised. Precision penalises longer replies; recall rewards completeness.
-
-**Why ROUGE-L, not ROUGE-1?** ROUGE-L respects word order, which matters for coherent email replies. "We will refund you" and "You will be refunded" have different ROUGE-1 scores but similar ROUGE-L behaviour.
-
-**Limitation:** ROUGE misses paraphrasing. That's why semantic similarity is weighted higher.
-
----
-
-#### 3. Tone Score (weight: 0.25)
-**Method:** LLM-as-judge (GPT-4o-mini) rates the tone appropriateness on a 1–5 scale.
-
-**Rubric:**
-- 5 = perfectly calibrated (empathetic for upset customers, formal for enterprise, concise for quick queries)
-- 3 = neutral/generic — works but not tailored
-- 1 = completely wrong tone (cold for an upset customer, overly casual for a legal query)
-
-**Why this matters:** A reply can be semantically correct but feel robotic or inappropriate. Tone is a real dimension of reply quality that text metrics can't capture.
-
----
-
-#### 4. Quality Score (weight: 0.15)
-**Method:** LLM-as-judge (GPT-4o-mini) rates overall completeness and professionalism on a 1–5 scale.
-
-**Rubric:**
-- 5 = complete, professional, ready to send
-- 3 = adequate but missing something
-- 1 = unusable (off-topic, incomplete, or harmful)
-
-**Why lowest weight?** This is a sanity check. The other three metrics already capture most of what "quality" means. We don't want to double-count.
-
----
-
-### Composite Score Formula
-
-```python
-composite = 0.35 × semantic_sim
-           + 0.25 × rouge_recall
-           + 0.25 × (tone_score / 5)
-           + 0.15 × (quality_score / 5)
-```
-
-All components are normalised to [0, 1]. The final score is also in [0, 1].
-
-**Interpreting composite scores:**
-- ≥ 0.70: Good — the reply is likely suitable with minor edits
-- 0.50–0.69: Adequate — may need meaningful edits before sending
-- < 0.50: Poor — significant revision required
-
----
-
-### Metric Validation
-
-**How do we know this composite score reflects real quality, not just a number?**
-
-We include a 10-example **calibration set** (`data/calibration.json`) with quality labels. In a production system these would be human-annotated; here we use a documented proxy rule (reply length ≥ 50 words = "good", 20–49 = "ok", < 20 = "bad") and acknowledge this limitation.
-
-We compute **Spearman ρ** between composite scores and calibration labels. This measures whether our metric *ranks* replies the same way a human would (monotonic correlation), which is the right test for a quality metric — we care about ordering, not absolute values.
-
-A Spearman ρ > 0.6 indicates strong agreement. The evaluation report always includes this value.
+### Layer 2: 5-Metric Composite Accuracy Scorer
+1. **Semantic Similarity (weight: 0.30):** Cosine similarity between embeddings.
+2. **ROUGE-L Recall (weight: 0.20):** Evaluates ground-truth information coverage.
+3. **Tone Score (weight: 0.20):** LLM-as-judge checks tone calibration (1-5).
+4. **Quality Score (weight: 0.10):** LLM-as-judge checks overall structure and completeness (1-5).
+5. **Faithfulness / Grounding Score (weight: 0.20):** Evaluates whether the generated reply hallucinated any timelines or policies not present in the RAG context.
 
 ---
 
 ## Running the Evaluation
 
 ```bash
-# Default: 20 emails, standard mode, saves to results/evaluation_report.json
-uv run python evaluate.py
+# Run standard evaluation on a sample of 20 emails
+uv run python evaluate.py --mode standard --sample 20
 
-# Evaluate a specific generation mode
-uv run python evaluate.py --mode refine    # self-refine loop
-uv run python evaluate.py --mode moa       # mixture-of-agents
-uv run python evaluate.py --mode debate    # agent-agent debate
+# Run evaluation with Mixture-of-Agents
+uv run python evaluate.py --mode moa --sample 20
 
-# Full dataset, all emails
-uv run python evaluate.py --sample 0
-
-# Machine-readable JSON to stdout
-uv run python evaluate.py --json-out | jq '.aggregate'
-
-# Enable Debate-as-Judge for evaluation (set in .env or inline)
-USE_DEBATE_JUDGE=true uv run python evaluate.py --sample 10
+# Run evaluation with Agent-Agent Debate
+uv run python evaluate.py --mode debate --sample 20
 ```
-
-**Cost estimate per 20 emails:**
-
-| Mode | ~Cost |
-|------|-------|
-| `standard` | $0.04 |
-| `refine` | $0.06 |
-| `moa` (3 candidates) | $0.14 |
-| `debate` (2 rounds) | $0.16 |
-| + Debate-as-Judge evaluator | +$0.06 |
 
 ---
 
-## Understanding the Report
+## DPO Preference Logging
 
-The report (`results/evaluation_report.json`) has three sections:
+All generation and evaluation runs are logged to a JSONL file via `src/logger.py`. This logs:
+- Prompt + incoming email
+- Generated reply + reference reply
+- Metric scores (composite, semantic, ROUGE-L, tone, quality, faithfulness)
 
-### `aggregate.overall`
-```json
-{
-  "composite_mean": 0.7134,
-  "composite_std": 0.0892,
-  "semantic_similarity_mean": 0.7821,
-  "rouge_recall_mean": 0.4312,
-  "tone_score_mean": 4.1,
-  "quality_score_mean": 4.3
-}
-```
-
-### `aggregate.by_category`
-Mean composite score per category — shows which email types the system handles best.
-
-### `calibration`
-```json
-{
-  "spearman_rho": 0.8333,
-  "p_value": 0.005,
-  "interpretation": "strong agreement with human labels"
-}
-```
-
-### `per_email`
-One record per evaluated email with all four metric scores, the generated reply, the reference reply, and the IDs of retrieved RAG examples.
-
----
-
-## Trade-offs & Design Decisions
-
-| Decision | Alternative considered | Why this choice |
-|----------|------------------------|-----------------|
-| Synthetic dataset | Real email corpora | Better reply pairing, full topic control, legal safety |
-| RAG generation | Fine-tuning | No GPU needed, updatable at runtime, interpretable |
-| Agentic RAG re-query | Fixed single retrieval | Catches unusual emails that don't embed well against the dataset |
-| Self-Refine loop | Always single-pass | Cheap extra call catches tone and coverage issues the first pass misses |
-| Mixture-of-Agents | Multiple fine-tuned models | Same model at different temperatures is cheaper; synthesizer picks best of all |
-| Agent-Agent Debate | Single LLM generation | Adversarial loop catches vague commitments and tone mismatches single-shot misses |
-| Debate-as-Judge | Single LLM judge | Two independent judges + arbitration removes position/verbosity bias from single judges |
-| Cosine embedding similarity | BERTScore | BERTScore is heavier; OpenAI embeddings are already used for RAG so zero extra cost |
-| ROUGE-L recall (not F1) | ROUGE-1 F1 | Recall rewards coverage; F1 would unfairly penalise longer (but correct) replies |
-| FAISS in-process | Pinecone / Qdrant | No external service to spin up; 200 vectors fit trivially in RAM |
-| GPT-4o-mini for generation | GPT-4o | 30× cheaper, adequate quality for support emails; GPT-4o is an easy upgrade |
-| vLLM via base_url config | Code-level backend switch | OpenAI-compatible API means zero code change; purely a config swap |
-
----
-
-## How I Used AI Tools
-
-This project was built with significant AI assistance, which I'm being explicit about:
-
-1. **Antigravity (Google DeepMind coding assistant)** — designed the overall architecture, wrote all source code files, and structured the evaluation framework. I reviewed, approved, and directed each step.
-
-2. **GPT-4o-mini** — used at runtime to generate the synthetic dataset (via `scripts/generate_dataset.py`) and as the LLM-as-judge in the evaluator.
-
-3. **OpenAI `text-embedding-3-small`** — used at runtime for both RAG retrieval and semantic similarity scoring.
-
-The core intellectual work — defining what "accuracy" means for email replies, choosing the metric dimensions and weights, and designing the validation approach — was developed through the planning phase described in the implementation plan artifact.
+The logger includes a utility to format these records directly into **DPO (Direct Preference Optimization) training pairs** (chosen vs. rejected responses), filtering by high-scoring vs. low-scoring generations to enable future offline alignment and fine-tuning.
 
 ---
 
@@ -526,12 +249,16 @@ hiver-email-reply/
 │   └── generate_dataset.py  # One-shot dataset generation
 ├── src/
 │   ├── __init__.py
-│   ├── dataset.py           # Dataset loader + FAISS index
-│   ├── generator.py         # RAG-based reply generator
-│   ├── evaluator.py         # Multi-metric accuracy scorer
-│   └── cli.py               # Unified CLI
+│   ├── classifier.py        # Sentiment & urgency classification
+│   ├── dataset.py           # Dataset loader, BM25, FAISS hybrid index & HyDE
+│   ├── generator.py         # RAG structured reply generator with Technique 1 & 4
+│   ├── moa_generator.py     # Mixture-of-Agents with Technique 2
+│   ├── debate_generator.py  # Agent-agent debate generator
+│   ├── evaluator.py         # 5-metric accuracy scorer + Layer 1 guardrails
+│   ├── logger.py            # DPO preference data logger
+│   └── cli.py               # Unified CLI with Technique 6 options
 ├── tests/
-│   └── test_metrics.py      # Unit tests (no API calls)
+│   └── test_metrics.py      # Unit tests (38 tests, no API calls)
 ├── results/                  # Auto-created; stores evaluation reports
 ├── evaluate.py              # Top-level evaluation entry point
 ├── pyproject.toml

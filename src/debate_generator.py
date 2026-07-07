@@ -214,6 +214,7 @@ def debate_reply(
     rounds: int = _DEBATE_ROUNDS,
     top_k: int = _RAG_TOP_K,
     model: str = _MODEL,
+    role_stakes_context: str = "",
 ) -> dict[str, Any]:
     """
     Generate a reply using agent-agent debate.
@@ -233,6 +234,9 @@ def debate_reply(
         Number of RAG examples to retrieve.
     model : str
         The model used for all agents (Composer, Critic, Judge).
+    role_stakes_context : str
+        Optional Role+Stakes context (who reads this, what's riding on it).
+        Injected into the Composer's initial prompt.
 
     Returns
     -------
@@ -246,6 +250,8 @@ def debate_reply(
     """
     # 1. RAG retrieval
     incoming_email = f"Subject: {subject}\n\n{body}"
+    if role_stakes_context:
+        incoming_email += f"\n\n[Context for this reply: {role_stakes_context}]"
     query_embedding = embed_texts([incoming_email], client)[0]
     retrieved = index.search(query_embedding, k=top_k)
     few_shot_block = _build_few_shot_block(retrieved)

@@ -66,6 +66,18 @@ def cli():
 @click.option("--no-agentic-rag", is_flag=True, default=False, help="Disable Agentic RAG re-query.")
 @click.option("--data-path", default="data/emails.json", show_default=True)
 @click.option("--json-out", is_flag=True, default=False, help="Output raw JSON instead of formatted display.")
+@click.option(
+    "--audience", default="",
+    help="Who will read this reply (e.g. 'an enterprise CFO', 'a first-time customer'). "
+         "Calibrates tone and depth. [Role+Stakes Technique]"
+)
+@click.option(
+    "--stakes", default="",
+    help="What is riding on this reply (e.g. '$50k renewal', 'mass email to 20,000 users'). "
+         "Calibrates urgency and precision. [Role+Stakes Technique]"
+)
+@click.option("--classify", is_flag=True, default=False,
+              help="Run sentiment/urgency classifier before generation.")
 def generate(
     subject: str,
     body: str,
@@ -76,6 +88,9 @@ def generate(
     no_agentic_rag: bool,
     data_path: str,
     json_out: bool,
+    audience: str,
+    stakes: str,
+    classify: bool,
 ):
     """Generate a suggested reply for a new incoming email."""
     from src.dataset import build_index
@@ -84,6 +99,19 @@ def generate(
 
     with console.status("Building index…"):
         index, client = build_index(client=client, data_path=data_path)
+
+    # Optional: run sentiment/urgency classifier
+    classification = None
+    if classify:
+        with console.status("Classifying email sentiment + urgency…"):
+            from src.classifier import classify_email
+            classification = classify_email(subject, body, client)
+            console.print(
+                f"[dim]Classified: [bold]{classification.sentiment}[/] sentiment, "
+                f"[bold]{classification.urgency}[/] urgency"
+                + (" | ⚠ Escalation risk" if classification.escalation_risk else "")
+                + "[/]"
+            )
 
     with console.status(f"Generating reply [{mode} mode]…"):
         result = _dispatch_generate(
@@ -96,13 +124,16 @@ def generate(
             moa_candidates=moa_candidates,
             debate_rounds=debate_rounds,
             agentic_rag=not no_agentic_rag,
+            classification=classification,
+            audience=audience,
+            stakes=stakes,
         )
 
     if json_out:
         print(json.dumps(result, indent=2))
         return
 
-    _display_generate_result(subject, body, mode, result)
+    _display_generate_result(subject, body, mode, result, classification)
 
 
 def _dispatch_generate(
@@ -115,8 +146,22 @@ def _dispatch_generate(
     moa_candidates: int,
     debate_rounds: int,
     agentic_rag: bool,
+    classification=None,
+    audience: str = "",
+    stakes: str = "",
 ) -> dict:
     """Route to the correct generator based on mode."""
+    # Build Role+Stakes extra context if provided
+    role_stakes_context = ""
+    if audience or stakes:
+        parts = []
+        if audience:
+            parts.append(f"This reply will be read by: {audience}.")
+        if stakes:
+            parts.append(f"Stakes: {stakes}.")
+        parts.append("Factor this into the tone, precision, and depth of your reply.")
+        role_stakes_context = " ".join(parts)
+
     if mode in ("standard", "refine"):
         from src.generator import generate_reply
         return generate_reply(
@@ -127,6 +172,8 @@ def _dispatch_generate(
             top_k=top_k,
             mode=mode,
             agentic_rag=agentic_rag,
+            classification=classification,
+            role_stakes_context=role_stakes_context,
         )
     elif mode == "moa":
         from src.moa_generator import moa_reply
@@ -147,12 +194,16 @@ def _dispatch_generate(
             client=client,
             rounds=debate_rounds,
             top_k=top_k,
+            role_stakes_context=role_stakes_context,
         )
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
 
-def _display_generate_result(subject: str, body: str, mode: str, result: dict) -> None:
+def _display_generate_result(
+    subject: str, body: str, mode: str, result: dict,
+    classification=None,
+) -> None:
     """Pretty-print a generation result to the console."""
     mode_labels = {
         "standard": "Standard RAG",
@@ -168,6 +219,30 @@ def _display_generate_result(subject: str, body: str, mode: str, result: dict) -
         border_style="blue",
     ))
 
+    # Show classification if available
+    if classification:
+        sentiment_colors = {"frustrated": "red", "neutral": "yellow", "satisfied": "green"}
+        urgency_colors = {"low": "dim", "medium": "yellow", "high": "red", "critical": "bold red"}
+        sc = sentiment_colors.get(classification.sentiment, "white")
+        uc = urgency_colors.get(classification.urgency, "white")
+        lines = [
+            f"Sentiment: [{sc}]{classification.sentiment.upper()}[/]   "
+            f"Urgency: [{uc}]{classification.urgency.upper()}[/]"
+        ]
+        if classification.escalation_risk:
+            lines.append("[bold red]⚠ Escalation risk detected[/]")
+        if classification.primary_issue:
+            lines.append(f"Issue: {classification.primary_issue}")
+        console.print(Panel("\n".join(lines), title="[yellow]Email Classification[/]", border_style="yellow"))
+
+    # Show Before-You-Answer interpretation note (standard/refine modes)
+    if result.get("interpretation_note"):
+        console.print(Panel(
+            result["interpretation_note"],
+            title="[magenta]🧠 Before You Answer — Interpretation[/]",
+            border_style="magenta",
+        ))
+
     # Show mode-specific extras
     if mode == "refine" and result.get("critique"):
         console.print(Panel(
@@ -182,6 +257,13 @@ def _display_generate_result(subject: str, body: str, mode: str, result: dict) -
                 c,
                 title=f"[dim]Candidate {i}[/]",
                 border_style="dim",
+            ))
+        # Show recommendation note
+        if result.get("recommendation_note"):
+            console.print(Panel(
+                result["recommendation_note"],
+                title="[cyan]🏆 Synthesizer Recommendation[/]",
+                border_style="cyan",
             ))
 
     if mode == "debate" and result.get("debate_transcript"):
@@ -364,7 +446,14 @@ def _print_summary(agg: dict, calibration: dict, results, mode: str) -> None:
     stats_table.add_row("📄 ROUGE-L Recall",       f"{overall.get('rouge_recall_mean', 0):.4f}", "")
     stats_table.add_row("🎭 Tone Score (1–5)",      f"{overall.get('tone_score_mean', 0):.2f}", "")
     stats_table.add_row("✅ Quality Score (1–5)",   f"{overall.get('quality_score_mean', 0):.2f}", "")
-    console.print(stats_table)
+    stats_table.add_row("🔒 Faithfulness",          f"{overall.get('faithfulness_mean', 0):.4f}", "")
+    gpr = overall.get('guardrail_pass_rate', 1.0)
+    gpr_color = "green" if gpr >= 0.95 else "yellow" if gpr >= 0.80 else "red"
+    stats_table.add_row(
+        "🛡 Guardrail Pass Rate",
+        f"[{gpr_color}]{gpr:.1%}[/]",
+        f"{int(gpr * (agg.get('n_evaluated', 0)))}/{agg.get('n_evaluated', 0)} passed",
+    )
     console.print()
 
     # Calibration

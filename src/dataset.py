@@ -190,7 +190,6 @@ class EmailIndex:
             return []
         tokens = query_text.lower().split()
         scores = self._bm25.get_scores(tokens)
-        top_n = int(np.argsort(scores)[::-1][:n])  # type: ignore
         top_indices = np.argsort(scores)[::-1][:n]
         return [(int(i), float(scores[i])) for i in top_indices]
 

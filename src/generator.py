@@ -53,24 +53,35 @@ _RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
 
 _STRUCTURED_SYSTEM = """\
 You are a professional customer-support agent for a B2B SaaS company called Hiver.
-Write a reply to the customer email.
 
 {tone_context}
 
+BEFORE YOU DRAFT THE REPLY — work through this in your JSON response:
+
+1. Consider 2-3 different ways to interpret what the customer is asking.
+   What is the most likely real issue behind their email?
+2. Flag any hidden assumptions in the email that might be wrong or incomplete.
+3. Pick the interpretation that best fits the customer's situation.
+
+Then write your reply based on that best interpretation.
+
 You MUST respond with a JSON object with exactly these fields:
 {{
+  "interpretation": "<one sentence: the real issue you're addressing and why>",
+  "hidden_assumptions": ["<assumption 1>", "<assumption 2>"],
   "greeting": "<opening line, e.g. 'Dear Sarah,' or 'Hi there,'>",
-  "body": "<the main response — address every issue the customer raised>",
-  "action_items": ["<specific next step 1>", "<specific next step 2>"],
+  "body": "<the main response — address the real issue, not just the surface question>",
+  "action_items": ["<specific next step — at least one concrete commitment>"],
   "sign_off": "The Hiver Support Team"
 }}
 
 Rules:
-- greeting: address the customer by name if one is in the email, else use "Hi there,"
-- body: be empathetic, professional, and concise. Address ALL issues raised.
-- action_items: list of concrete commitments (empty list [] if none)
+- interpretation: one sentence explaining the real issue you identified
+- hidden_assumptions: list of 0-2 assumptions the customer might be making wrongly
+- greeting: address the customer by name if available, else use "Hi there,"
+- body: empathetic, professional, concise — address the REAL issue, not just the words
+- action_items: ALWAYS include at least one concrete, time-bound commitment or next step
 - sign_off: always "The Hiver Support Team"
-- action_items must be an array (can be empty)
 - Output ONLY the JSON object. No other text.
 """
 
@@ -129,6 +140,24 @@ def _assemble_reply(structured: dict[str, Any]) -> str:
     sign_off = structured.get("sign_off", "The Hiver Support Team").strip()
     parts.append(f"\n{sign_off}")
     return "\n\n".join(parts)
+
+
+def _extract_interpretation_note(structured: dict[str, Any]) -> str:
+    """
+    Extract the 'Before You Answer' reasoning as a human-readable note.
+    Shown in CLI output and stored in the result for transparency.
+    """
+    parts = []
+    interpretation = structured.get("interpretation", "").strip()
+    if interpretation:
+        parts.append(f"Interpretation: {interpretation}")
+    assumptions = structured.get("hidden_assumptions", [])
+    if assumptions and isinstance(assumptions, list):
+        for a in assumptions:
+            a_str = str(a).strip()
+            if a_str:
+                parts.append(f"⚠ Assumption flagged: {a_str}")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +357,7 @@ def generate_reply(
     agentic_rag: bool = True,
     retrieval_mode: Literal["dense", "hybrid", "hyde"] = _RETRIEVAL_MODE,
     classification: Any | None = None,
+    role_stakes_context: str = "",
 ) -> dict[str, Any]:
     """
     Generate a suggested reply for an incoming email.
@@ -368,7 +398,7 @@ def generate_reply(
       - critique             : str (refine mode only)
       - classification       : dict (if classifier was run)
     """
-    # 1. Build tone context from classification if available
+    # 1. Build tone context from classification + role/stakes context
     tone_context = ""
     classification_dict: dict[str, Any] = {}
     if classification is not None:
@@ -383,6 +413,9 @@ def generate_reply(
             }
         except Exception:
             pass
+    # Append Role+Stakes context if provided (Technique 6)
+    if role_stakes_context:
+        tone_context = (tone_context + "\n\n" + role_stakes_context).strip()
 
     # 2. Retrieve (with HyDE, agentic re-query, or hybrid)
     hyde_hypothetical: str | None = None
@@ -422,6 +455,9 @@ def generate_reply(
         subject, body, retrieved, client, model, tone_context
     )
 
+    # Extract Before-You-Answer interpretation note
+    interpretation_note = _extract_interpretation_note(structured)
+
     # 4. Self-refine if requested
     critique = None
     if mode == "refine":
@@ -430,6 +466,7 @@ def generate_reply(
     result: dict[str, Any] = {
         "generated_reply": draft,
         "structured_output": structured,
+        "interpretation_note": interpretation_note,
         "retrieved_examples": [
             {
                 "id": ex.get("id"),

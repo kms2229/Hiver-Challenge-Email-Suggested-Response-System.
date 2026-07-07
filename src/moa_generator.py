@@ -66,8 +66,15 @@ Your task:
 2. Synthesize a single FINAL reply that combines the best of all candidates.
    Do not just pick one — genuinely merge their strengths.
 3. The result should be tighter and better than any individual candidate.
+4. After the final reply, on a new line starting with "RECOMMENDATION:", write
+   one sentence explaining which candidate contributed the most and what key
+   element from it improved the final output.
 
-Output ONLY the final reply text. Sign off as "The Hiver Support Team".
+Format your response as:
+[final reply text]
+RECOMMENDATION: [one sentence explaining synthesis choices]
+
+Sign off the reply as "The Hiver Support Team".
 """
 
 
@@ -101,8 +108,11 @@ def _synthesize(
     candidates: list[str],
     client: OpenAI,
     model: str,
-) -> str:
-    """Synthesizer reads all candidates and produces the final merged reply."""
+) -> tuple[str, str]:
+    """Synthesizer reads all candidates and produces the final merged reply.
+
+    Returns: (final_reply, recommendation_note)
+    """
     candidates_block = "\n\n".join(
         f"--- Candidate {i+1} ---\n{c}"
         for i, c in enumerate(candidates)
@@ -112,7 +122,8 @@ def _synthesize(
         f"=== Candidate Replies ===\n\n"
         f"{candidates_block}\n\n"
         f"=== Your task ===\n"
-        f"Synthesize the best final reply by combining the strongest elements of all candidates."
+        f"Synthesize the best final reply. Then add a RECOMMENDATION: line explaining "
+        f"which candidate contributed most and what made the final reply better."
     )
     response = client.chat.completions.create(
         model=model,
@@ -120,10 +131,21 @@ def _synthesize(
             {"role": "system", "content": _SYNTHESIZER_SYSTEM},
             {"role": "user", "content": user_msg},
         ],
-        temperature=0.2,   # Low temp → focused synthesis
-        max_tokens=500,
+        temperature=0.2,
+        max_tokens=600,
     )
-    return (response.choices[0].message.content or "").strip()
+    raw = (response.choices[0].message.content or "").strip()
+
+    # Split reply from recommendation note
+    if "RECOMMENDATION:" in raw:
+        parts = raw.split("RECOMMENDATION:", 1)
+        final_reply = parts[0].strip()
+        recommendation = "RECOMMENDATION: " + parts[1].strip()
+    else:
+        final_reply = raw
+        recommendation = ""
+
+    return final_reply, recommendation
 
 
 def moa_reply(
@@ -181,7 +203,7 @@ def moa_reply(
         candidates.append(draft)
 
     # 3. Synthesize final reply
-    final_reply = _synthesize(
+    final_reply, recommendation = _synthesize(
         incoming_email=incoming_email,
         candidates=candidates,
         client=client,
@@ -191,6 +213,7 @@ def moa_reply(
     return {
         "generated_reply": final_reply,
         "candidates": candidates,
+        "recommendation_note": recommendation,
         "retrieved_examples": [
             {
                 "id": ex.get("id"),
