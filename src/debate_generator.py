@@ -310,6 +310,7 @@ def debate_reply(
         "debate_transcript": debate_transcript,
         "rounds_completed": len([t for t in debate_transcript if t["role"] == "composer"]),
         "accepted_early": accepted_early,
+        "rag_context_text": few_shot_block,
         "retrieved_examples": [
             {
                 "id": ex.get("id"),

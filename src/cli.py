@@ -129,6 +129,15 @@ def generate(
             stakes=stakes,
         )
 
+    # Run reference-free grounding/guardrails audit on generated reply
+    from src.evaluator import evaluate_reply_reference_free
+    audit_res = evaluate_reply_reference_free(
+        generated_reply=result["generated_reply"],
+        rag_context_text=result.get("rag_context_text"),
+        client=client,
+    )
+    result["audit"] = audit_res
+
     if json_out:
         print(json.dumps(result, indent=2))
         return
@@ -277,6 +286,26 @@ def _display_generate_result(
                 border_style=color,
             ))
 
+    # Reference-free Audit feedback
+    audit = result.get("audit")
+    if audit:
+        passed = audit.get("passed", True)
+        if not passed:
+            warnings = []
+            if not audit.get("guardrail_pass", True):
+                failures = ", ".join(audit.get("guardrail_failures", []))
+                warnings.append(f"[bold red]Guardrail Failures:[/] {failures}")
+            if audit.get("faithfulness_score", 1.0) < 0.70:
+                exp = audit.get("faithfulness_explanation", "")
+                warnings.append(f"[bold red]Grounding Failure (Score: {audit.get('faithfulness_score'):.2f}):[/] {exp}")
+            console.print(Panel(
+                "\n".join(warnings),
+                title="[bold yellow]⚠️ WARNING: Grounding & Guardrail Audit Failed[/]",
+                border_style="yellow",
+            ))
+        else:
+            console.print(f"[dim green]✓ Live Audit Passed (Faithfulness: {audit.get('faithfulness_score'):.2f})[/]\n")
+
     # Final reply
     was_re_queried = result.get("was_re_queried", False)
     title_extras = []
@@ -287,8 +316,13 @@ def _display_generate_result(
         early = result.get("accepted_early", False)
         title_extras.append(f"{'✅ Accepted early' if early else f'{rounds} rounds'}")
 
-    title = f"[bold green]Suggested Reply[/] [dim]({mode_label}{'  ' + ' · '.join(title_extras) if title_extras else ''})[/]"
-    console.print(Panel(result["generated_reply"], title=title, border_style="green"))
+    # Determine border style based on audit pass status
+    border_color = "green"
+    if audit and not audit.get("passed", True):
+        border_color = "yellow"
+
+    title = f"[bold {border_color}]Suggested Reply[/] [dim]({mode_label}{'  ' + ' · '.join(title_extras) if title_extras else ''})[/]"
+    console.print(Panel(result["generated_reply"], title=title, border_style=border_color))
 
     # RAG examples table
     if result.get("retrieved_examples"):

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 from src.dataset import build_index, load_emails
 from src.classifier import classify_email
-from src.evaluator import evaluate_reply, aggregate_results
+from src.evaluator import evaluate_reply, aggregate_results, evaluate_reply_reference_free
 
 load_dotenv()
 
@@ -222,6 +222,39 @@ with tab1:
                 if mode == "refine" and result.get("critique"):
                     st.markdown("### 🔍 Self-Critique Loop")
                     st.warning(result["critique"])
+
+                # Reference-free grounding and guardrails audit
+                audit = evaluate_reply_reference_free(
+                    generated_reply=result["generated_reply"],
+                    rag_context_text=result.get("rag_context_text"),
+                    client=client,
+                )
+
+                if not audit["passed"]:
+                    st.markdown("### ⚠️ Grounding & Guardrail Audit Failed")
+                    warnings = []
+                    if not audit["guardrail_pass"]:
+                        failures = ", ".join(audit["guardrail_failures"])
+                        warnings.append(f"**Guardrail Failures:** {failures}")
+                    if audit["faithfulness_score"] < 0.70:
+                        warnings.append(
+                            f"**Grounding Failure (Score: {audit['faithfulness_score']:.2f}):** {audit['faithfulness_explanation']}"
+                        )
+                    st.error("\n\n".join(warnings))
+
+                    # Provide Fallback Canned Response
+                    st.markdown("### 🛡️ Recommended Fallback Canned Response")
+                    canned_reply = (
+                        "Hi there,\n\n"
+                        "Thank you for contacting us. We have received your query and escalated "
+                        "this to a specialist support representative to investigate. "
+                        "We will follow up with you directly within 24 hours.\n\n"
+                        "The Hiver Support Team"
+                    )
+                    st.code(canned_reply, language="text")
+                    st.caption("Copy this safe fallback reply instead of the hallucinated draft.")
+                else:
+                    st.success(f"✓ Live Audit Passed (Grounding/Faithfulness Score: {audit['faithfulness_score']:.2f})")
 
                 # Final reply
                 st.markdown("### ✉️ Final Suggested Reply")

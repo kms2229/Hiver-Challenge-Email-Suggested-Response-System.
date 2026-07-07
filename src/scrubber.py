@@ -15,7 +15,7 @@ _EMAIL_RE = re.compile(
 
 # 2. Phone numbers (matches +1-555-555-5555, (555) 555-5555, 5555555555, etc.)
 _PHONE_RE = re.compile(
-    r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
+    r"(?<!\d)(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
 )
 
 # 3. Credit cards (matches 13 to 16 digit sequences with optional spaces/dashes)
