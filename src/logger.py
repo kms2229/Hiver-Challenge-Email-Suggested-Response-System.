@@ -42,12 +42,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.scrubber import scrub_pii
+
 _LOG_PATH = Path(os.getenv("PREFERENCE_LOG_PATH", "logs/preference_log.jsonl"))
 
 _SYSTEM_PROMPT_TEMPLATE = (
     "You are a professional customer-support agent for a B2B SaaS company called Hiver. "
     "Write a helpful, empathetic, and concise email reply."
 )
+
 
 
 def log_evaluation(
@@ -71,27 +74,26 @@ def log_evaluation(
     path = Path(log_path or _LOG_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    user_content = (
+        f"Subject: {eval_result.subject}\n\n"
+        f"{eval_result.reference_reply.split('The Hiver Support Team')[0].strip()}"
+    )
+
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "email_id": str(eval_result.email_id),
-        "subject": eval_result.subject,
+        "subject": scrub_pii(eval_result.subject),
         "category": eval_result.category,
         # DPO prompt format (OpenAI messages style)
         "prompt": [
             {"role": "system", "content": _SYSTEM_PROMPT_TEMPLATE},
             {
                 "role": "user",
-                "content": (
-                    f"Subject: {eval_result.subject}\n\n"
-                    f"{eval_result.reference_reply.split('The Hiver Support Team')[0].strip()}"
-                    # Use the actual email body from reference (not stored directly in EvaluationResult)
-                    # This is a best-effort placeholder; in production you'd store the body too
-                ),
+                "content": scrub_pii(user_content),
             },
         ],
-        # The generated reply is the "chosen" candidate if score ≥ 0.7, else "rejected"
-        "generated_reply": eval_result.generated_reply,
-        "reference_reply": eval_result.reference_reply,
+        "generated_reply": scrub_pii(eval_result.generated_reply),
+        "reference_reply": scrub_pii(eval_result.reference_reply),
         "scores": {
             "composite": eval_result.scores.composite_score,
             "semantic_similarity": eval_result.scores.semantic_similarity,

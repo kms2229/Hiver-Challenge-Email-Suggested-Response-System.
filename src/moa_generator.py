@@ -214,6 +214,7 @@ def moa_reply(
         "generated_reply": final_reply,
         "candidates": candidates,
         "recommendation_note": recommendation,
+        "rag_context_text": few_shot_block,
         "retrieved_examples": [
             {
                 "id": ex.get("id"),

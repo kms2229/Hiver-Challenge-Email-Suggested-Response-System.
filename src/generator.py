@@ -467,6 +467,7 @@ def generate_reply(
         "generated_reply": draft,
         "structured_output": structured,
         "interpretation_note": interpretation_note,
+        "rag_context_text": _build_few_shot_block(retrieved),
         "retrieved_examples": [
             {
                 "id": ex.get("id"),

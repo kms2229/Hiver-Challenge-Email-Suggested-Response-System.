@@ -755,3 +755,33 @@ def results_to_dicts(results: list[EvaluationResult]) -> list[dict[str, Any]]:
         d = asdict(r)
         out.append(d)
     return out
+
+
+def evaluate_reply_reference_free(
+    generated_reply: str,
+    rag_context_text: str | None,
+    client: OpenAI,
+) -> dict[str, Any]:
+    """
+    Perform a reference-free evaluation of a generated reply.
+    Checks Layer 1 deterministic guardrails and Layer 2 faithfulness grounding.
+    """
+    guardrail_pass, guardrail_failures = _layer1_guardrails(generated_reply)
+
+    if rag_context_text:
+        faith_score, faith_exp = _faithfulness_score(
+            generated_reply=generated_reply,
+            rag_context=rag_context_text,
+            client=client,
+        )
+    else:
+        faith_score, faith_exp = 1.0, "No RAG context available for verification."
+
+    return {
+        "guardrail_pass": guardrail_pass,
+        "guardrail_failures": guardrail_failures,
+        "faithfulness_score": faith_score,
+        "faithfulness_explanation": faith_exp,
+        "passed": guardrail_pass and (faith_score >= 0.70),
+    }
+
